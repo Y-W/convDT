@@ -7,7 +7,7 @@ import keras
 
 FLAGS = tf.app.flags.FLAGS
 
-tf.app.flags.DEFINE_string('model_dir', '', 'Directory for model checkpoints')
+tf.app.flags.DEFINE_string('model_dir', None, 'Directory for model checkpoints')
 
 tf.app.flags.DEFINE_integer('scales', 3, 'Number of scales')
 tf.app.flags.DEFINE_string('conv_schema', '3,16;3,16;3,16', 'Convolution layers schema')
