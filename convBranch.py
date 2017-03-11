@@ -125,12 +125,16 @@ class ConvBranch:
     def eval(self, inputs):
         input_batches = []
         p = 0
-        while p < inputs.shape[0]:
-            tmp = np.zeros(self.input_dim)
-            k = min(inputs.shape[0] - p, self.input_dim[0])
-            tmp[:k] = inputs[p:p+k]
+        while p < len(inputs):
+            tmp = np.zeros(self.input_dim, dtype=np.float32)
+            k = min(len(inputs) - p, self.input_dim[0])
+            for i in xrange(k):
+                tmp[i] = inputs[p+i]
             input_batches.append(tmp)
             p += k
         result_batches = self.eval_batches(input_batches)
-        results = np.concatenate(result_batches, axis=0)
-        return results[:inputs.shape[0]]
+        results = []
+        for r in result_batches:
+            k = min(len(inputs) - len(results), self.input_dim[0])
+            results.extend(r.tolist()[:k])
+        return results
