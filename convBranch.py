@@ -3,7 +3,6 @@
 import os
 import numpy as np
 import tensorflow as tf
-import keras
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -18,10 +17,10 @@ tf.app.flags.DEFINE_integer('training_iterations', 1000, 'Number of training ite
 tf.app.flags.DEFINE_float('learning_rate_initial', 1e-1, 'Initial learning rate')
 tf.app.flags.DEFINE_float('learning_rate_final', 1e-3, 'Final learning rate')
 
-convSeries = [(int(s), int(c)) for s, c in conv.split(',') for conv in FLAGS.conv_schema.split(';')]
-
 class ConvBranch:
-    def __init__(self, name, input_dim, label_dim, model_dir=FLAGS.model_dir):
+    def __init__(self, name, input_dim, label_dim, model_dir=None):
+        if model_dir is None:
+            model_dir = FLAGS.model_dir
         assert input_dim[0] == label_dim[0]
         self.name = name
         self.model_dir = model_dir
@@ -35,9 +34,14 @@ class ConvBranch:
         self.makeEndPoints()
 
     
-    def makeConvBranch(self, input=None, k_downsamp=FLAGS.scales, convSeries=convSeries, reuse_variable=False):
+    def makeConvBranch(self, input=None, k_downsamp=None, convSeries=None, reuse_variable=False):
         if input is None:
             input = self.data
+        if k_downsamp is None:
+            k_downsamp = FLAGS.scales
+        if convSeries is None:
+            convSeries = [(int(conv.split(',')[0]), int(conv.split(',')[1])) for conv in FLAGS.conv_schema.split(';')]
+
         with self.tf_graph.as_default():
             with tf.variable_scope('conv_branch', values=[input], dtype=tf.float32, reuse=reuse_variable) as sc:
                 scale_outputs = []
@@ -48,9 +52,9 @@ class ConvBranch:
                             with tf.variable_scope('conv_%i' % i, [last_output]):
                                 filters = tf.get_variable('filters',
                                                         shape=(
-                                                            s, s, last_output.get_shape()[3], c),
+                                                            s, s, last_output.get_shape()[3].value, c),
                                                         initializer=tf.random_normal_initializer(
-                                                            stddev=np.sqrt(2.0 / last_output.get_shape()[3])),
+                                                            stddev=np.sqrt(2.0 / last_output.get_shape()[3].value)),
                                                         trainable=True)
                                 last_output = tf.nn.conv2d(
                                     last_output, filters, strides=(1, 1, 1, 1), padding='VALID')
@@ -62,12 +66,12 @@ class ConvBranch:
                     if k + 1 < k_downsamp:
                         _, h, w, _ = input.get_shape()
                         input = tf.image.resize_bilinear(
-                            input, (h // 2, w // 2), name=('downsamp_%i' % k))
+                            input, (h.value // 2, w.value // 2), name=('downsamp_%i' % k))
                 all_outputs = tf.concat(scale_outputs, axis=1)
                 with tf.variable_scope('dense', [all_outputs]):
-                    weights = tf.get_variable('weights', shape=(all_outputs.get_shape()[1], 1),
+                    weights = tf.get_variable('weights', shape=(all_outputs.get_shape()[1].value, 1),
                                             initializer=tf.random_normal_initializer(
-                                                stddev=np.sqrt(1.0 / all_outputs.get_shape()[1])),
+                                                stddev=np.sqrt(1.0 / all_outputs.get_shape()[1].value)),
                                             trainable=True)
                     bias = tf.get_variable('bias', shape=(1, 1), initializer=tf.zeros_initializer(), trainable=True)
                     preact = tf.squeeze(tf.add(tf.matmul(all_outputs, weights), bias), name='preact')
@@ -77,11 +81,14 @@ class ConvBranch:
     def gini_impurity(dist):
         return 1.0 - tf.reduce_sum(tf.multiply(dist, dist))
 
-    def makeEndPoints(self, branching=None, label=None, balance_split_weight=FLAGS.balance_loss):
+    def makeEndPoints(self, branching=None, label=None, balance_split_weight=None):
         if branching is None:
             branching = self.branch
         if label is None:
             label = self.label
+        if balance_split_weight is None:
+            balance_split_weight = FLAGS.balance_loss
+
         with self.tf_graph.as_default():
             self.split_loss = tf.square(0.5 - tf.reduce_mean(branching)) * balance_split_weight
             dist = tf.reduce_mean(tf.multiply(tf.expand_dims(branching, -1), label), axis=0)
@@ -102,7 +109,7 @@ class ConvBranch:
 
     def train(self, data, label):
         self.setup_training()
-        with tf.Session() as sess:
+        with tf.Session(graph=self.tf_graph) as sess:
             tf.logging.set_verbosity(tf.logging.INFO)
             sess.run(tf.global_variables_initializer())
             for _ in xrange(FLAGS.training_iterations):
@@ -113,7 +120,7 @@ class ConvBranch:
             saver.save(sess, os.path.join(self.model_dir, self.name+'.ckpt'))
 
     def eval_batches(self, inputs):
-        with tf.Session() as sess:
+        with tf.Session(graph=self.tf_graph) as sess:
             saver = tf.train.Saver(tf.trainable_variables())
             saver.restore(sess, os.path.join(self.model_dir, self.name+'.ckpt'))
             results = []
