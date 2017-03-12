@@ -77,7 +77,7 @@ def main(argv=None):
 
     np.random.seed(43)
     cifar10 = Cifar10()
-    batchSize = 128
+    batchSize = 1024
     randSelect = np.random.randint(cifar10.trainData.shape[0], size=(batchSize,))
     img_inputs = cifar10.trainData[randSelect]
     img_labels = cifar10.trainLabel[randSelect]
@@ -89,14 +89,18 @@ def main(argv=None):
     eval_outputs = test.eval(eval_inputs)
 
     from collections import Counter
-    c0, c1 = Counter()
+    c0, c1 = Counter(), Counter()
     for i in xrange(cifar10.trainData.shape[0]):
         if not eval_outputs[i]:
             c0[cifar10.trainLabelRaw[i]] += 1
         else:
             c1[cifar10.trainLabelRaw[i]] += 1
+    sumA = sumB = 0
     for i in xrange(cifar10.num_class):
-        print i, c0[0], c1[i]
+        print i, c0[i], c1[i]
+        sumA += c0[i]
+        sumB += c1[i]
+    print 'ALL', sumA, sumB
 
 
 

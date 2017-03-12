@@ -8,14 +8,16 @@ FLAGS = tf.app.flags.FLAGS
 
 tf.app.flags.DEFINE_string('model_dir', None, 'Directory for model checkpoints')
 
-tf.app.flags.DEFINE_integer('scales', 3, 'Number of scales')
-tf.app.flags.DEFINE_string('conv_schema', '3,16;3,16;3,16', 'Convolution layers schema')
+tf.app.flags.DEFINE_integer('scales', 4, 'Number of scales')
+tf.app.flags.DEFINE_string('conv_schema', '3,16', 'Convolution layers schema')
 
-tf.app.flags.DEFINE_float('balance_loss', 1.0, 'Weight of balance-split loss')
+tf.app.flags.DEFINE_float('balance_tolerance', 0.1, 'Tolerance of splitting imbalance')
+tf.app.flags.DEFINE_float('balance_loss', 10.0, 'Weight of balance-split loss')
 
-tf.app.flags.DEFINE_integer('training_iterations', 1000, 'Number of training iterations')
-tf.app.flags.DEFINE_float('learning_rate_initial', 1e-1, 'Initial learning rate')
-tf.app.flags.DEFINE_float('learning_rate_final', 1e-3, 'Final learning rate')
+tf.app.flags.DEFINE_integer('training_iterations', 100, 'Number of training iterations')
+tf.app.flags.DEFINE_float('learning_rate_initial', 1e-3, 'Initial learning rate')
+# tf.app.flags.DEFINE_float('learning_rate_final', 1e-3, 'Final learning rate')
+tf.app.flags.DEFINE_float('momentum', 0.9, 'Momentum value')
 
 class ConvBranch:
     def __init__(self, name, input_dim, label_dim, model_dir=None):
@@ -75,7 +77,8 @@ class ConvBranch:
                                             trainable=True)
                     bias = tf.get_variable('bias', shape=(1, 1), initializer=tf.zeros_initializer(), trainable=True)
                     preact = tf.squeeze(tf.add(tf.matmul(all_outputs, weights), bias), name='preact')
-                self.branch = tf.sigmoid(preact, name='branching')
+                # self.branch = tf.sigmoid(preact, name='branching')
+                self.branch = tf.hard_gate(tf.tanh(preact), name='branching')
 
     @staticmethod
     def gini_impurity(dist):
@@ -90,21 +93,24 @@ class ConvBranch:
             balance_split_weight = FLAGS.balance_loss
 
         with self.tf_graph.as_default():
-            self.split_loss = tf.square(0.5 - tf.reduce_mean(branching)) * balance_split_weight
+            imbalance = tf.abs(0.5 - tf.reduce_mean(branching))
+            imbalance = tf.nn.relu(imbalance - FLAGS.balance_tolerance)
+            self.split_loss = tf.square(imbalance)
             dist = tf.reduce_mean(tf.multiply(tf.expand_dims(branching, -1), label), axis=0)
             self.gini_loss = (1.0 - tf.reduce_mean(branching)) * ConvBranch.gini_impurity(tf.reduce_mean(label, axis=0) - dist) \
                     + tf.reduce_mean(branching) * ConvBranch.gini_impurity(dist)
-            self.total_loss = self.split_loss + self.gini_loss
+            self.total_loss = self.split_loss * balance_split_weight + self.gini_loss
 
             self.branch_result = tf.greater(branching, 0.5)
     
     def setup_training(self):
         with self.tf_graph.as_default():
             self.global_step = tf.train.get_or_create_global_step()
-            self.learning_rate = tf.train.exponential_decay(FLAGS.learning_rate_initial, self.global_step, 
-                                     FLAGS.training_iterations, FLAGS.learning_rate_final / FLAGS.learning_rate_initial, 
-                                     staircase=False, name='learning_rate')
-            self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
+            # self.learning_rate = tf.train.exponential_decay(FLAGS.learning_rate_initial, self.global_step, 
+            #                          FLAGS.training_iterations, FLAGS.learning_rate_final / FLAGS.learning_rate_initial, 
+            #                          staircase=False, name='learning_rate')
+            self.learning_rate = FLAGS.learning_rate_initial
+            self.optimizer = tf.train.MomentumOptimizer(learning_rate=self.learning_rate, momentum=FLAGS.momentum)
             self.train_step = self.optimizer.minimize(self.total_loss, global_step=self.global_step, name='optimize_step')
 
     def train(self, data, label):
@@ -125,7 +131,7 @@ class ConvBranch:
             saver.restore(sess, os.path.join(self.model_dir, self.name+'.ckpt'))
             results = []
             for input in inputs:
-                result = sess.run(self.branch_result, feed_dict={self.data : inputs})
+                result = sess.run(self.branch_result, feed_dict={self.data : input})
                 results.append(result)
             return results
     
