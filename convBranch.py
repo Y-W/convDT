@@ -8,8 +8,9 @@ FLAGS = tf.app.flags.FLAGS
 
 tf.app.flags.DEFINE_string('model_dir', None, 'Directory for model checkpoints')
 
-tf.app.flags.DEFINE_integer('scales', 4, 'Number of scales')
-tf.app.flags.DEFINE_string('conv_schema', '3,16', 'Convolution layers schema')
+tf.app.flags.DEFINE_integer('scales', 3, 'Number of scales')
+tf.app.flags.DEFINE_string('conv_schema', '3,4;3,4', 'Convolution layers schema')
+tf.app.flags.DEFINE_boolean('hard_gate', False, 'Use hard gating')
 
 tf.app.flags.DEFINE_float('balance_tolerance', 0.1, 'Tolerance of splitting imbalance')
 tf.app.flags.DEFINE_float('balance_loss', 10.0, 'Weight of balance-split loss')
@@ -17,6 +18,7 @@ tf.app.flags.DEFINE_float('balance_loss', 10.0, 'Weight of balance-split loss')
 tf.app.flags.DEFINE_integer('training_iterations', 100, 'Number of training iterations')
 tf.app.flags.DEFINE_float('learning_rate_initial', 1e-3, 'Initial learning rate')
 # tf.app.flags.DEFINE_float('learning_rate_final', 1e-3, 'Final learning rate')
+tf.app.flags.DEFINE_float('weight_decay', 1e-3, 'Initial learning rate')
 tf.app.flags.DEFINE_float('momentum', 0.9, 'Momentum value')
 
 class ConvBranch:
@@ -36,13 +38,15 @@ class ConvBranch:
         self.makeEndPoints()
 
     
-    def makeConvBranch(self, input=None, k_downsamp=None, convSeries=None, reuse_variable=False):
+    def makeConvBranch(self, input=None, k_downsamp=None, convSeries=None, reuse_variable=False, hard_gate=None):
         if input is None:
             input = self.data
         if k_downsamp is None:
             k_downsamp = FLAGS.scales
         if convSeries is None:
             convSeries = [(int(conv.split(',')[0]), int(conv.split(',')[1])) for conv in FLAGS.conv_schema.split(';')]
+        if hard_gate is None:
+            hard_gate = FLAGS.hard_gate
 
         with self.tf_graph.as_default():
             with tf.variable_scope('conv_branch', values=[input], dtype=tf.float32, reuse=reuse_variable) as sc:
@@ -77,20 +81,24 @@ class ConvBranch:
                                             trainable=True)
                     bias = tf.get_variable('bias', shape=(1, 1), initializer=tf.zeros_initializer(), trainable=True)
                     preact = tf.squeeze(tf.add(tf.matmul(all_outputs, weights), bias), name='preact')
-                # self.branch = tf.sigmoid(preact, name='branching')
-                self.branch = tf.hard_gate(tf.tanh(preact), name='branching')
+                if hard_gate:
+                    self.branch = tf.hard_gate(tf.tanh(preact), name='branching')
+                else:
+                    self.branch = tf.sigmoid(preact, name='branching')
 
     @staticmethod
     def gini_impurity(dist):
         return 1.0 - tf.reduce_sum(tf.multiply(dist, dist))
 
-    def makeEndPoints(self, branching=None, label=None, balance_split_weight=None):
+    def makeEndPoints(self, branching=None, label=None, balance_split_weight=None, weight_l2=None):
         if branching is None:
             branching = self.branch
         if label is None:
             label = self.label
         if balance_split_weight is None:
             balance_split_weight = FLAGS.balance_loss
+        if weight_l2 is None:
+            weight_l2 = FLAGS.weight_decay
 
         with self.tf_graph.as_default():
             imbalance = tf.abs(0.5 - tf.reduce_mean(branching))
@@ -99,13 +107,19 @@ class ConvBranch:
             dist = tf.reduce_mean(tf.multiply(tf.expand_dims(branching, -1), label), axis=0)
             self.gini_loss = (1.0 - tf.reduce_mean(branching)) * ConvBranch.gini_impurity(tf.reduce_mean(label, axis=0) - dist) \
                     + tf.reduce_mean(branching) * ConvBranch.gini_impurity(dist)
-            self.total_loss = self.split_loss * balance_split_weight + self.gini_loss
+            self.weight_loss = None
+            for p in tf.trainable_variables():
+                if self.weight_loss is None:
+                    self.weight_loss = tf.nn.l2_loss(p)
+                else:
+                    self.weight_loss = tf.add(self.weight_loss, tf.nn.l2_loss(p))
+            self.total_loss = self.split_loss * balance_split_weight + self.gini_loss + self.weight_loss * weight_l2
 
             self.branch_result = tf.greater(branching, 0.5)
     
     def setup_training(self):
         with self.tf_graph.as_default():
-            self.global_step = tf.train.get_or_create_global_step()
+            self.global_step = tf.contrib.framework.get_or_create_global_step() # tf.train.get_or_create_global_step()
             # self.learning_rate = tf.train.exponential_decay(FLAGS.learning_rate_initial, self.global_step, 
             #                          FLAGS.training_iterations, FLAGS.learning_rate_final / FLAGS.learning_rate_initial, 
             #                          staircase=False, name='learning_rate')

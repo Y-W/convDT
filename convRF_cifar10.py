@@ -75,6 +75,9 @@ class Cifar10:
 def main(argv=None):
     assert FLAGS.model_dir is not None and FLAGS.cifar10_dir is not None
 
+    if not os.path.exists(FLAGS.model_dir):
+        os.makedirs(FLAGS.model_dir)
+
     np.random.seed(43)
     cifar10 = Cifar10()
     batchSize = 1024
